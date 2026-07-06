@@ -1,0 +1,6 @@
+# Install these under WINDOWS Python (not WSL python3) — pythonnet loads Windows .NET DLLs.
+# A Python 3.11–3.13 (64-bit) is recommended; pythonnet wheels may not yet cover 3.14.
+pythonnet>=3.0.3
+mcp[cli]>=1.2.0
+# Optional but recommended modern wrapper (used by some examples):
+# zospy>=1.2.0
