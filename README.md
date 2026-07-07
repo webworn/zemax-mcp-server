@@ -96,8 +96,11 @@ Then just talk to Claude about your optical system.
 **Optimize:** `zemax_merit_wizard` · `zemax_merit_value` · `zemax_optimize`
 (local/hammer/global) · `zemax_quick_focus`
 **Analyze:** `zemax_run_analysis` (RayFan, StandardSpot, FftPsf, FftMtf, WavefrontMap, …) ·
-`zemax_spot_rms`
-**Non-sequential:** `zemax_nsc_summary` · `zemax_nsc_ray_trace`
+`zemax_spot_rms` · `zemax_analysis_series` (x/y curves for ray fans / MTF) ·
+`zemax_batch_ray_trace` (fast normalized ray trace)
+**Multi-config:** `zemax_mce_summary` · `zemax_mce_add_config` · `zemax_mce_add_operand`
+**Tolerancing:** `zemax_tde_summary` · `zemax_tolerance_wizard` · `zemax_run_tolerancing`
+**Non-sequential:** `zemax_nsc_summary` · `zemax_nsc_ray_trace` · `zemax_nsc_detector_data`
 **Advanced:** `zemax_eval` (gated escape hatch for un-wrapped calls)
 
 The tool set is intentionally extensible — the
@@ -108,13 +111,21 @@ for wrapping the rest of the API.
 
 ## Status & caveats
 
-- **v0.1 — verified live.** The connection module and every MCP tool were run
-  end-to-end against **OpticStudio 2025 R2.02 (Enterprise)** in extension mode.
-  A member-name probe confirmed 33/35 API members on the first pass; the two
-  misses were fixed and re-verified: RMS spot is `SpotData.GetRMSSpotSizeFor(field, 0)`
-  (poly­chromatic), and the wavefront analysis IDM is `WavefrontMap` (not `Wavefront`).
-  Tool output is JSON-sanitized so non-finite values (e.g. a planar surface's
-  `radius = Infinity`) serialize safely.
+- **v0.1 — verified live.** All 31 MCP tools were run end-to-end against
+  **OpticStudio 2025 R2.02 (Enterprise)** in extension mode — including a full
+  build→optimize loop (merit 1.03→0.08, RMS spot 1453→56 µm), batch ray tracing,
+  ray-fan/MTF curve extraction, multi-config edits, a 21-operand tolerance wizard
+  + Monte-Carlo run, and NSC detector readout on the `Diode sample` (50×50, total
+  flux 15625). A member-name probe confirmed 33/35 members on the first pass; the
+  two misses were fixed and re-verified: RMS spot is
+  `SpotData.GetRMSSpotSizeFor(field, 0)` (polychromatic), the wavefront analysis
+  IDM is `WavefrontMap` (not `Wavefront`). Tool output is JSON-sanitized so
+  non-finite values (e.g. a planar surface's `radius = Infinity`) serialize safely.
+- **Session health.** Many rapid `connect → New() → disconnect` cycles can wedge
+  the OpticStudio session (`New_Analysis` returns `None`; on-axis rays report
+  spurious errors). The long-lived MCP server does one connection and holds it, so
+  it won't hit this; the analysis tools now raise a clear "restart & reconnect"
+  message if they detect the wedged state.
 - **Extension mode arms one connection per click.** *Programming ▸ Interactive
   Extension* accepts a single `ConnectAsExtension` then stops listening; the
   long-lived MCP server grabs it once and holds it, so this only matters if you
