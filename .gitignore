@@ -9,3 +9,11 @@ venv/
 *.ZDA
 *.CFG
 Autosave/
+# User optical designs / scratch (keep design files out of the bridge repo)
+Projects/
+*.zmx
+*.zos
+*.ZMX
+*.ZOS
+# Tolerancing/analysis temp reports
+*.i2w.txt
