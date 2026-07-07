@@ -95,6 +95,69 @@ def beam_wander(cn2, w0):
     return math.sqrt(2.42 * cn2 * L ** 3 * w0 ** (-1.0 / 3.0))
 
 
+# ============================================== DELIVERED POWER + THERMAL BLOOMING
+# air thermo-optic constants (near STP, ~15 C, 1 atm)
+DN_DT   = -1.0e-6     # d(n)/dT of air  [1/K]  (negative -> defocusing thermal lens)
+RHO_AIR = 1.2        # kg/m^3
+CP_AIR  = 1005.0     # J/(kg K)
+
+
+def absorption_coeff(vis_km, aerosol_absorb_frac=0.15, molecular_per_km=0.02):
+    """Absorption part of the extinction [1/m] -- ONLY absorption heats the air and
+    drives thermal blooming (aerosol/molecular scattering does not). Aerosol
+    absorption ~ frac of aerosol extinction; plus a molecular (H2O) term [1/km]."""
+    beta_tot = extinction_per_km(vis_km)                 # 1/km
+    beta_ray = 0.012 * (550.0 / 1080.0) ** 4
+    beta_aer = max(beta_tot - beta_ray, 0.0)
+    return (aerosol_absorb_frac * beta_aer + molecular_per_km) / 1000.0
+
+
+def fried_parameter(cn2):
+    """Fried coherence length r0 [m] (plane wave): (0.423 k^2 Cn^2 L)^(-3/5)."""
+    return (0.423 * K * K * cn2 * L) ** (-3.0 / 5.0)
+
+
+def thermal_blooming(P, alpha_abs, w0, v_wind):
+    """First-order steady-state thermal blooming (uniform crosswind v_wind).
+    Returns (deltaT[K], distortion[waves rms], Strehl). ORDER-OF-MAGNITUDE:
+    accurate blooming needs wave-optics propagation (split-step Fresnel)."""
+    # steady-state temp rise in the beam: absorbed power / (mass flux * cp)
+    dT = 2 * alpha_abs * P / (math.pi * w0 * v_wind * RHO_AIR * CP_AIR)
+    waves = abs(DN_DT) * dT * L / LAMBDA          # accumulated OPD in waves
+    sigma_phi = 2 * math.pi * waves               # rad (treat as ~rms wavefront)
+    strehl = math.exp(-sigma_phi * sigma_phi)     # Marechal
+    return dT, waves, strehl
+
+
+def delivered_power(P_in, vis_km=23.0, M2=1.5, w0=D / 2, v_wind=5.0, cn2=1e-14,
+                    telescope_T=1.0, fsm_tilt_corrected=True):
+    """Power on target + beam quality over the 2 km path.
+
+    P_in W input; vis_km visibility; M2 beam quality; w0 transmit beam radius [m];
+    v_wind crosswind/slew speed [m/s]; cn2 turbulence; telescope_T optics
+    transmission if routed through the director; fsm_tilt_corrected removes the
+    turbulence tilt (beam wander) from the spot (the FSM loop's job).
+    """
+    T, _ = transmission(vis_km)
+    P_del = P_in * T * telescope_T                       # <-- total power on target
+
+    # spot radius (1/e^2) at range L: diffraction*M^2 (+) turbulence
+    w_diff = M2 * LAMBDA * L / (math.pi * w0)
+    r0 = fried_parameter(cn2)
+    w_turb = LAMBDA * L / (math.pi * r0)                 # higher-order turbulence spread
+    # tilt/wander term (removed if the FSM corrects it)
+    wander = 0.0 if fsm_tilt_corrected else beam_wander(cn2, w0)
+    w_total = math.sqrt(w_diff ** 2 + w_turb ** 2 + wander ** 2)
+
+    alpha_abs = absorption_coeff(vis_km)
+    dT, bloom_waves, strehl = thermal_blooming(P_del, alpha_abs, w0, v_wind)
+
+    peak_I = 2 * P_del * strehl / (math.pi * w_total ** 2)   # W/m^2 (Gaussian peak)
+    return dict(P_del=P_del, T=T, w_diff=w_diff, w_turb=w_turb, r0=r0,
+                w_total=w_total, alpha_abs=alpha_abs, deltaT=dT,
+                bloom_waves=bloom_waves, strehl=strehl, peak_I=peak_I)
+
+
 def lognormal_fade_margin(sigma_I2, availability=0.999):
     """Fade margin [dB] so that P(I < I_thresh) = 1-availability, log-normal I."""
     # inverse complementary error function via bisection
@@ -165,6 +228,27 @@ def main():
     print("  averages scintillation away; turbulence TILT (AoA + wander) is the")
     print("  dominant correctable term and is exactly the FSM loop's job")
     print("  (Beam Stabilization report, Layer 4 / Loop 1-3).")
+
+    print("\n--- 4. DELIVERED POWER + THERMAL BLOOMING (6 kW, M^2=1.5) ---")
+    P_in = 6000.0
+    print(f"  input {P_in/1000:.1f} kW, M^2=1.5, transmit beam radius w0={D/2:.2f} m, "
+          f"crosswind 5 m/s")
+    print(f"  {'visibility':>11} {'P_target':>9} {'spot r':>8} {'bloom':>7} "
+          f"{'Strehl':>7} {'peak I':>11}")
+    for V in (50, 23, 10, 5):
+        r = delivered_power(P_in, vis_km=V, M2=1.5, v_wind=5.0, cn2=1e-14)
+        print(f"  {V:>9} km {r['P_del']/1000:>7.2f}kW {r['w_total']*1000:>6.1f}mm "
+              f"{r['bloom_waves']:>6.3f}w {r['strehl']:>7.2f} "
+              f"{r['peak_I']/1e4:>8.0f} W/cm2")
+    print("  (P_target = power ON target; only absorption removes power. M^2,")
+    print("   turbulence & blooming spread the spot -> lower peak I, same watts.)")
+    print("\n  wind sensitivity (blooming), clear 23 km, 6 kW:")
+    for v in (10, 5, 2, 1):
+        r = delivered_power(P_in, vis_km=23, v_wind=v, cn2=1e-14)
+        print(f"    v={v:>2} m/s -> bloom {r['bloom_waves']:.3f} waves, "
+              f"Strehl {r['strehl']:.2f}, peak I {r['peak_I']/1e4:.0f} W/cm2")
+    print("  Note: thermal-blooming numbers are first-order (Marechal/distortion-")
+    print("  number); accurate blooming needs wave-optics split-step propagation.")
     print("=" * 70)
 
 

@@ -36,6 +36,38 @@ averaging, factor **A ≈ 0.0012 ⇒ ~832× variance reduction**):
 | 3e-14 | strong | 3.244 | 1.062 | 0.037 | 14.2 µrad |
 | 1e-13 | strong | 10.82 | 1.115 | 0.039 | 26.0 µrad |
 
+## Delivered power + thermal blooming (6 kW, M² = 1.5)
+
+`delivered_power(P_in, vis_km, M2, w0, v_wind, cn2, ...)` returns power-on-target and
+beam quality. **Only absorption removes watts**; M², turbulence, and thermal blooming
+spread the spot (lower peak irradiance, same total power). For 6 kW, M²=1.5, a 0.32 m
+transmit beam, 5 m/s crosswind, Cn²=10⁻¹⁴:
+
+| Visibility | Power on target | Spot radius | Blooming | Strehl | Peak irradiance |
+|---|---|---|---|---|---|
+| 50 km | 5.61 kW | 20.7 mm | 0.085 λ | 0.75 | 624 W/cm² |
+| 23 km | 5.20 kW | 20.7 mm | 0.097 λ | 0.69 | 531 W/cm² |
+| 10 km | 4.33 kW | 20.7 mm | 0.117 λ | 0.58 | 372 W/cm² |
+| 5 km | 2.90 kW | 20.7 mm | 0.132 λ | 0.50 | 217 W/cm² |
+
+The spot at 2 km is **turbulence-dominated** (~21 mm) — far larger than the 3 mm
+diffraction/M² spot — so higher-order turbulence, not M², sets the delivered
+irradiance (the FSM removes only tilt; higher orders need AO).
+
+**Thermal blooming is wind-critical** (absorbed power heats the air into a defocusing
+lens; crosswind clears it). At 6 kW, clear air:
+
+| Crosswind | Blooming | Strehl | Peak irradiance |
+|---|---|---|---|
+| 10 m/s | 0.049 λ | 0.91 | 701 W/cm² |
+| 5 m/s | 0.097 λ | 0.69 | 531 W/cm² |
+| 2 m/s | 0.243 λ | 0.10 | 75 W/cm² |
+| 1 m/s | 0.486 λ | ~0 | ~0 |
+
+Below ~2 m/s the beam blooms catastrophically (stagnation) — the classic high-energy-
+laser limit. **These blooming numbers are first-order** (Maréchal / distortion-number);
+accurate blooming needs wave-optics split-step propagation.
+
 ## How it connects to the beam-stabilization demo
 
 - **Absorption** sets the link budget (≈1.2 dB round-trip in clear air; the link
