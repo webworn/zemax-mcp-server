@@ -64,6 +64,7 @@ Two official connection modes, both supported:
 | `skills/non-sequential-design.md` | Playbook for **non-sequential** work (illumination, stray light, scatter, sources/detectors, ray splitting, importance sampling). |
 | `examples/smoke_test.py` | End-to-end: build a singlet, optimize, print RMS spot. |
 | `examples/beam_stabilization.py` | Closed-loop **2-FSM aimpoint stabilization** on a real reflective telescope (converts it to NSC, senses the return, drives two FSMs). See [`docs/beam-stabilization-demo.md`](docs/beam-stabilization-demo.md). |
+| `examples/atmosphere_1080nm_2km.py` | **Atmospheric channel** for the 1.08 µm beam over 2 km — absorption (link budget) + scintillation (aperture averaging, fade) + turbulence tilt feeding the FSM loop. See [`docs/atmosphere-1080nm-2km.md`](docs/atmosphere-1080nm-2km.md). |
 | `setup/INSTALL.md` | Full setup + troubleshooting. |
 
 ---
