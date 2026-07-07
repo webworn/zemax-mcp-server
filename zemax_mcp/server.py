@@ -29,6 +29,7 @@ Design notes
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Any, Optional
 
@@ -53,8 +54,25 @@ def _require() -> ZemaxSession:
     return _session
 
 
+def _sanitize(v):
+    """Make values valid-JSON-safe. Non-finite floats (inf/nan) aren't legal JSON;
+    OpticStudio returns them routinely (a planar surface has radius = +inf), so map
+    them to readable string tokens the LLM still understands."""
+    if isinstance(v, float):
+        if math.isnan(v):
+            return "NaN"
+        if math.isinf(v):
+            return "Infinity" if v > 0 else "-Infinity"
+        return v
+    if isinstance(v, dict):
+        return {k: _sanitize(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_sanitize(x) for x in v]
+    return v
+
+
 def _ok(**kw) -> dict:
-    return {"ok": True, **kw}
+    return _sanitize({"ok": True, **kw})
 
 
 # ====================================================================== CONNECTION
@@ -308,9 +326,10 @@ def zemax_quick_focus() -> dict:
 @mcp.tool()
 def zemax_run_analysis(analysis_type: str) -> dict:
     """Open an analysis by its ZOSAPI AnalysisIDM name, run it, and return the numeric
-    results grid if available. Examples: 'RayFan', 'Spot', 'FftPsf', 'FftMtf',
-    'Wavefront', 'SeidelDiagram'. Returns headers + data rows when the analysis
-    exposes a results data grid; otherwise returns a text summary path.
+    results if available. Examples: 'RayFan', 'StandardSpot', 'FftPsf', 'FftMtf',
+    'WavefrontMap', 'SeidelDiagram'. Grid-based analyses (PSF, wavefront) return a
+    sampled data grid; series-based analyses (ray fan, MTF) report their series count
+    (extract curves via zemax_eval on GetDataSeries).
     """
     z = _require()
     ZOSAPI = z.zosapi
@@ -320,13 +339,20 @@ def zemax_run_analysis(analysis_type: str) -> dict:
     res = a.GetResults()
     out: dict[str, Any] = {"analysis": analysis_type}
     try:
-        grid = res.GetDataGrid(0)
-        nx, ny = grid.Nx, grid.Ny
-        out["grid"] = {"nx": nx, "ny": ny,
-                       "sample": [[float(grid.Z(ix, iy)) for ix in range(min(nx, 5))]
-                                  for iy in range(min(ny, 5))]}
-    except Exception:
-        out["note"] = "No numeric data grid; use zemax_eval on the analysis for series data."
+        if res.NumberOfDataGrids > 0:
+            grid = res.GetDataGrid(0)
+            nx, ny = grid.Nx, grid.Ny
+            out["grid"] = {"nx": nx, "ny": ny,
+                           "sample": [[float(grid.Z(ix, iy)) for ix in range(min(nx, 5))]
+                                      for iy in range(min(ny, 5))]}
+        elif res.NumberOfDataSeries > 0:
+            out["data_series_count"] = res.NumberOfDataSeries
+            out["note"] = ("Series (x/y) analysis; extract curves via "
+                           "zemax_eval on the analysis's GetDataSeries(i).")
+        else:
+            out["note"] = "No numeric grid/series exposed; use zemax_eval for extraction."
+    except Exception as e:
+        out["note"] = f"Result extraction issue: {type(e).__name__}: {e}"
     a.Close()
     return _ok(**out)
 
@@ -338,11 +364,12 @@ def zemax_spot_rms() -> dict:
     ZOSAPI = z.zosapi
     a = z.system.Analyses.New_Analysis(ZOSAPI.Analysis.AnalysisIDM.StandardSpot)
     a.ApplyAndWaitForCompletion()
-    res = a.GetResults()
+    sd = a.GetResults().SpotData
     vals = []
     try:
-        for i in range(res.SpotData.NumberOfFields):
-            vals.append(float(res.SpotData.GetRMSSpotSizeForField(i + 1)))
+        # GetRMSSpotSizeFor(field, wave); wave=0 -> polychromatic (all wavelengths).
+        for i in range(1, sd.NumberOfFields + 1):
+            vals.append(float(sd.GetRMSSpotSizeFor(i, 0)))
     except Exception:
         pass
     a.Close()

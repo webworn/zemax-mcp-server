@@ -95,7 +95,7 @@ Then just talk to Claude about your optical system.
 `zemax_lde_set_surface` · `zemax_set_variable`
 **Optimize:** `zemax_merit_wizard` · `zemax_merit_value` · `zemax_optimize`
 (local/hammer/global) · `zemax_quick_focus`
-**Analyze:** `zemax_run_analysis` (RayFan, Spot, FftPsf, FftMtf, Wavefront, …) ·
+**Analyze:** `zemax_run_analysis` (RayFan, StandardSpot, FftPsf, FftMtf, WavefrontMap, …) ·
 `zemax_spot_rms`
 **Non-sequential:** `zemax_nsc_summary` · `zemax_nsc_ray_trace`
 **Advanced:** `zemax_eval` (gated escape hatch for un-wrapped calls)
@@ -108,11 +108,20 @@ for wrapping the rest of the API.
 
 ## Status & caveats
 
-- **v0.1 foundation.** The connection module and MCP tools follow the canonical
-  Ansys Python templates and the verified ZOS-API object model, but need a
-  **live run** against OpticStudio to confirm every exact member name. Members
-  flagged `[confirm]` / `# VERIFY` in the docs should be checked against
-  `ZOS-API.chm`.
+- **v0.1 — verified live.** The connection module and every MCP tool were run
+  end-to-end against **OpticStudio 2025 R2.02 (Enterprise)** in extension mode.
+  A member-name probe confirmed 33/35 API members on the first pass; the two
+  misses were fixed and re-verified: RMS spot is `SpotData.GetRMSSpotSizeFor(field, 0)`
+  (poly­chromatic), and the wavefront analysis IDM is `WavefrontMap` (not `Wavefront`).
+  Tool output is JSON-sanitized so non-finite values (e.g. a planar surface's
+  `radius = Infinity`) serialize safely.
+- **Extension mode arms one connection per click.** *Programming ▸ Interactive
+  Extension* accepts a single `ConnectAsExtension` then stops listening; the
+  long-lived MCP server grabs it once and holds it, so this only matters if you
+  run multiple one-shot scripts (re-click between each).
+- **Standalone/headless** was **not** available on this license despite the
+  Enterprise edition — `CreateNewApplication()` succeeds but `IsValidLicenseForAPI`
+  is false. Use extension mode.
 - Third-party wrappers exist and are worth knowing:
   [**ZOSPy**](https://github.com/MREYE-LUMC/ZOSPy) (MIT, pythonnet, actively
   maintained — recommended for heavier use) and the older COM-based

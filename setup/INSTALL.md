@@ -11,9 +11,13 @@ Python**, not the WSL/Linux `python3`. Claude Code (running in WSL) launches it 
 calling `python.exe`, which crosses the WSL→Windows boundary automatically.
 
 Your machine currently has **Windows Python 3.14.2**, but `pythonnet`'s stable
-wheels typically trail the newest CPython. If `pip install pythonnet` fails on
-3.14, install a **64-bit Python 3.11–3.13** from python.org and use that
-interpreter for the steps below.
+wheels typically trail the newest CPython. Use a **64-bit Python 3.11–3.13**.
+
+> **Verified working here:** Python **3.13-64** at
+> `C:\Users\PC\AppData\Local\Python\pythoncore-3.13-64\python.exe`
+> with `pythonnet 3.0.5` + `mcp 1.28.1`. From WSL that interpreter is
+> `/mnt/c/Users/PC/AppData/Local/Python/pythoncore-3.13-64/python.exe`.
+> Find your versions with `py -0p`.
 
 ## 1. Verify the Zemax install (already confirmed)
 
@@ -49,6 +53,12 @@ python -c "import clr; print('pythonnet OK')"
    ```
    You should see JSON with your license edition, serial, and current file.
 
+> ⚠️ **One connection per click.** Interactive Extension arms a *single*
+> connection, then stops listening. Each standalone script run consumes it, so
+> **re-click Programming ▸ Interactive Extension before every run**. The MCP
+> server (below) is a long-lived process that connects once and holds the slot,
+> so this only bites one-shot scripts.
+
 ### Standalone mode (headless)
 ```powershell
 python -m zemax_mcp.connection standalone
@@ -58,18 +68,27 @@ Premium/Enterprise-tier license for the API.
 
 ## 4. Register the MCP server with Claude Code
 
-From WSL (Claude Code):
+From WSL (Claude Code). Because Claude Code launches the server from its own
+working directory (not this repo), put the repo on `PYTHONPATH` as a **Windows**
+path and give the full `python.exe` path:
 
 ```bash
-claude mcp add zemax -- python.exe -m zemax_mcp.server
+claude mcp add zemax \
+  -e PYTHONPATH='D:\Claude_code\Zemax plugin' \
+  -- /mnt/c/Users/PC/AppData/Local/Python/pythoncore-3.13-64/python.exe -m zemax_mcp.server
 ```
 
-Then in Claude Code you can say things like *"connect to Zemax in extension mode
-and show me the lens data"* and Claude will call the `zemax_connect` /
-`zemax_lde_summary` tools.
+Confirm it registered and is reachable:
 
-If `python.exe` isn't on PATH from WSL, use the full path, e.g.
-`/mnt/c/Users/PC/AppData/Local/Programs/Python/Python312/python.exe`.
+```bash
+claude mcp list      # expect:  zemax: ... - ✔ Connected
+```
+
+`✔ Connected` means the server process started and completed the MCP handshake —
+it does **not** yet mean it's attached to OpticStudio. That happens when you (or
+Claude) call the `zemax_connect` tool. Then in Claude Code you can say things like
+*"connect to Zemax in extension mode and show me the lens data"* and Claude will
+call `zemax_connect` / `zemax_lde_summary`.
 
 ### Lock down the escape hatch (optional)
 `zemax_eval` runs arbitrary Python against the live session. To disable it:
