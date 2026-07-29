@@ -53,6 +53,60 @@ Two official connection modes, both supported:
 
 ---
 
+## Connecting to OpticStudio (step by step)
+
+Extension mode attaches the MCP server to your **already-running** OpticStudio
+GUI, so every edit Claude makes appears live in the Lens Data Editor. This is the
+mode to use (standalone/headless needs a license tier this install doesn't grant —
+see caveats).
+
+**In OpticStudio (the GUI):**
+
+1. **Launch OpticStudio** and open the system you want to work on (or start a new
+   one). Any lens file is fine — the bridge attaches to whatever is open.
+2. Click the **`Programming`** tab in the ribbon at the top.
+3. In that tab, click **`Interactive Extension`**.
+4. A small dialog appears — *"Zemax is listening for the ZOS-API client to
+   connect…"* (it shows a status like **Not Connected / Waiting**). **Leave this
+   dialog open.** OpticStudio is now listening for exactly one connection.
+
+**In Claude Code (this session):**
+
+5. Ask Claude to connect — e.g. *"connect to zemax"* — which calls
+   **`zemax_connect`** (`mode="extension"`, the default). On success it returns
+   the license **edition, serial, samples dir, and the currently open file**, and
+   the OpticStudio dialog flips to **Connected**.
+6. That's it — now ask Claude to open a file, edit surfaces, trace rays, optimize,
+   etc. Changes show up live in the GUI. Use **`zemax_save_file`** to write the
+   result back to disk.
+
+**Quick self-test instead of step 5** (from WSL, optional):
+
+```bash
+python.exe -m zemax_mcp.connection extension   # prints edition/serial if the arm worked
+```
+
+### Things that trip people up
+
+- **One arm per click.** *Interactive Extension* accepts a **single**
+  `ConnectAsExtension` and then stops listening. The long-lived MCP server grabs
+  it once and holds it for the whole session, so you normally click **once**. If
+  the connection drops (or you ran a one-shot script), **re-click
+  `Interactive Extension`** before reconnecting.
+- **"License is not valid for ZOS-API use" on connect** almost always means the
+  dialog isn't armed — go back to *Programming ▸ Interactive Extension* and click
+  it, then retry `zemax_connect`.
+- **Don't close the dialog** while you want the live link; closing it drops the
+  connection.
+- **Edits are live and unsaved.** Nothing is written to `.zmx`/`.zos` until you
+  call `zemax_save_file` (which can Save-As to a path). Save before closing.
+- **Standalone/headless mode** (`zemax_connect` with `mode="standalone"`) is the
+  no-GUI alternative, but it needs a Professional/Premium/Enterprise API license;
+  on this install `CreateNewApplication()` reports an invalid API license, so use
+  extension mode.
+
+---
+
 ## Repository layout
 
 | Path | What |
