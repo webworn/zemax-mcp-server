@@ -120,6 +120,7 @@ python.exe -m zemax_mcp.connection extension   # prints edition/serial if the ar
 | `examples/beam_stabilization.py` | Closed-loop **2-FSM aimpoint stabilization** on a real reflective telescope (converts it to NSC, senses the return, drives two FSMs). See [`docs/beam-stabilization-demo.md`](docs/beam-stabilization-demo.md). |
 | `examples/atmosphere_1080nm_2km.py` | **Atmospheric channel** for the 1.08 µm beam over 2 km — absorption (link budget) + scintillation (aperture averaging, fade) + turbulence tilt feeding the FSM loop, plus `delivered_power()` with first-order thermal blooming. See [`docs/atmosphere-1080nm-2km.md`](docs/atmosphere-1080nm-2km.md). |
 | `examples/blooming_split_step.py` | **Wave-optics split-step (BPM)** thermal-blooming model — propagates the complex field to the 2 km target with a nonlinear thermal phase; the trustworthy blooming Strehl / beam-bending numbers. Validated vs diffraction theory + the link budget. |
+| `requirements.txt` | Python deps to install under **Windows** Python: `pythonnet`, `mcp[cli]` (optional `zospy`). |
 | `setup/INSTALL.md` | Full setup + troubleshooting. |
 
 ---
@@ -128,7 +129,7 @@ python.exe -m zemax_mcp.connection extension   # prints edition/serial if the ar
 
 ```powershell
 # 1. Install deps under Windows Python (3.11–3.13 recommended)
-python -m pip install pythonnet "mcp[cli]"
+python -m pip install -r requirements.txt      # or: pip install pythonnet "mcp[cli]"
 
 # 2. Smoke-test the connection (open OpticStudio + Programming ▸ Interactive Extension first)
 python -m zemax_mcp.connection extension

@@ -17,3 +17,5 @@ Projects/
 *.ZOS
 # Tolerancing/analysis temp reports
 *.i2w.txt
+# Personal / local notes
+SESSION ID'S.txt
