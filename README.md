@@ -37,7 +37,7 @@ can *converse* your way through a design:
 │  Claude Code     │◄──────────────►│  zemax_mcp.server    │◄─────────────────►│  OpticStudio (ZOS-API) │
 │  (WSL / Linux)   │  python.exe     │  (Windows Python)    │   ZOSAPI.dll etc.  │  GUI or headless       │
 └─────────────────┘                 └──────────────────────┘                    └───────────────────────┘
-        tools:  zemax_connect · zemax_set_aperture · zemax_lde_* · zemax_optimize · zemax_run_analysis · zemax_nsc_* · zemax_eval
+        tools:  zemax_connect · zemax_lde_* · zemax_mfe_* · zemax_operand · zemax_optimize · zemax_analysis_* · zemax_snapshot · zemax_nsc_* · zemax_eval
 ```
 
 Two official connection modes, both supported:
@@ -144,17 +144,26 @@ Then just talk to Claude about your optical system.
 
 ---
 
-## Tool surface (v0.1)
+## Tool surface
 
-**Connection:** `zemax_connect` · `zemax_disconnect` · `zemax_info`
+**Connection:** `zemax_connect` · `zemax_disconnect` · `zemax_info` ·
+`zemax_cleanup` (recover a stuck session without restarting OpticStudio)
 **System:** `zemax_new_system` · `zemax_open_file` · `zemax_save_file` ·
 `zemax_set_aperture` · `zemax_set_wavelengths` · `zemax_set_fields`
-**Lens Data Editor:** `zemax_lde_summary` · `zemax_lde_insert_surface` ·
-`zemax_lde_set_surface` · `zemax_set_variable`
-**Optimize:** `zemax_merit_wizard` · `zemax_merit_value` · `zemax_optimize`
-(local/hammer/global) · `zemax_quick_focus`
-**Analyze:** `zemax_run_analysis` (RayFan, StandardSpot, FftPsf, FftMtf, WavefrontMap, …) ·
-`zemax_spot_rms` · `zemax_analysis_series` (x/y curves for ray fans / MTF) ·
+**Undo:** `zemax_snapshot` · `zemax_restore` · `zemax_diff` — optimize / wizard /
+restore snapshot automatically to `<Zemax data>\MCP\snapshots`
+**Lens Data Editor:** `zemax_lde_summary` (types, conics, solves, parameters) ·
+`zemax_lde_insert_surface` · `zemax_lde_remove_surface` · `zemax_lde_set_surface`
+(surface type, conic, stop, parameters) · `zemax_set_variable` (any cell, glass
+substitution) · `zemax_set_solve` (marginal-ray focus, F/#, pickups, …)
+**Merit function:** `zemax_operand` (evaluate any operand: EFFL, TOTR, RWRE, FICL, …) ·
+`zemax_mfe_summary` (with % contribution) · `zemax_mfe_set_operand` · `zemax_mfe_remove` ·
+`zemax_merit_wizard` (with glass/air boundaries) · `zemax_merit_value`
+**Optimize:** `zemax_optimize` (local/hammer/global, cycles, run time) · `zemax_quick_focus`
+**Analyze:** `zemax_run_analysis` (grid stats + data; RayFan, FftPsf, WavefrontMap, …) ·
+`zemax_analysis_text` (full text output of any analysis) · `zemax_spot_rms` ·
+`zemax_analysis_series` (x/y curves for ray fans / MTF) — all take MODIFYSETTINGS
+`settings` · `zemax_layout_image` (PNG of the layout) ·
 `zemax_batch_ray_trace` (fast normalized ray trace)
 **Multi-config:** `zemax_mce_summary` · `zemax_mce_add_config` · `zemax_mce_add_operand`
 **Tolerancing:** `zemax_tde_summary` · `zemax_tolerance_wizard` · `zemax_run_tolerancing`
