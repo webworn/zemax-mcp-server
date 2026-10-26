@@ -32,6 +32,7 @@ import json
 import math
 import os
 import re
+import statistics
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
@@ -278,6 +279,27 @@ def _wsl(path: str) -> str:
     if path[1:2] != ":":
         return path
     return "/mnt/" + path[0].lower() + path[2:].replace("\\", "/")
+
+
+def _op(z: ZemaxSession, name: str, *params) -> float:
+    """Evaluate a merit operand (columns Int1, Int2, Data1..Data6) without an MFE row."""
+    p = (list(params) + [0] * 8)[:8]
+    return float(z.system.MFE.GetOperandValue(
+        getattr(z.zosapi.Editors.MFE.MeritOperandType, name),
+        int(p[0]), int(p[1]), *(float(x) for x in p[2:])))
+
+
+def _fields(z: ZemaxSession) -> list[tuple]:
+    """(field number, x, y, Hx, Hy) per field, normalized the way the system is."""
+    f = z.system.SystemData.Fields
+    pts = [(float(f.GetField(i).X), float(f.GetField(i).Y))
+           for i in range(1, f.NumberOfFields + 1)]
+    if str(f.Normalization).endswith("Rectangular"):
+        rx = max(abs(x) for x, _ in pts) or 1.0
+        ry = max(abs(y) for _, y in pts) or 1.0
+    else:
+        rx = ry = max(math.hypot(x, y) for x, y in pts) or 1.0
+    return [(i + 1, x, y, x / rx, y / ry) for i, (x, y) in enumerate(pts)]
 
 
 def _snapshot(z: ZemaxSession, label: str = "") -> str:
@@ -570,13 +592,11 @@ def zemax_operand(operand: str, params: Optional[list[float]] = None) -> dict:
 
     params fill the operand's columns in order (Int1, Int2, Data1..Data6; missing
     ones are 0), e.g. EFFL: [0, wave]; SPHA: [surface, wave]; REAY: [surface, wave,
-    Hx, Hy, Px, Py]. Column meanings per operand are in the OpticStudio help."""
+    Hx, Hy, Px, Py]; RWCE: [sampling, wave, Hx, Hy]; MTFA: [sampling, wave, field,
+    freq]. Column meanings per operand are in the OpticStudio help."""
     z = _require()
     p = (list(params or []) + [0] * 8)[:8]
-    v = z.system.MFE.GetOperandValue(
-        getattr(z.zosapi.Editors.MFE.MeritOperandType, operand),
-        int(p[0]), int(p[1]), *(float(x) for x in p[2:]))
-    return _ok(operand=operand, params=p, value=float(v))
+    return _ok(operand=operand, params=p, value=_op(z, operand, *p))
 
 
 @mcp.tool()
@@ -848,6 +868,300 @@ def zemax_spot_rms() -> dict:
     return _ok(rms_spot_by_field=vals)
 
 
+# =================================================================== DESIGN REVIEW
+_UM_TO_LENS_UNITS = {"Millimeters": 1e-3, "Centimeters": 1e-4, "Inches": 1e-3 / 25.4,
+                     "Meters": 1e-6}
+
+
+def _marginal_trace(z: ZemaxSession, wave: int) -> dict[int, dict]:
+    """Trace the 4 pupil-edge rays of every field: per field, how many are
+    vignetted and how many fail (TIR, missed surface)."""
+    fields = _fields(z)
+    edge = ((0, 1), (0, -1), (1, 0), (-1, 0))
+    rays = [[hx, hy, px, py] for _, _, _, hx, hy in fields for px, py in edge]
+    res = zemax_batch_ray_trace(rays, wavelength=wave)["rays"]
+    out = {}
+    for k, (n, *_rest) in enumerate(fields):
+        chunk = res[4 * k: 4 * k + 4]
+        out[n] = {"vignetted": sum(1 for r in chunk if r["vignette"]),
+                  "vignetted_at": sorted({r["vignette"] for r in chunk if r["vignette"]}),
+                  "ray_errors": sum(1 for r in chunk if r["err"])}
+    return out
+
+
+def _performance(z: ZemaxSession, wave: int = 0, mtf_freq: Optional[float] = None) -> dict:
+    """Raw (unsanitized) numbers behind zemax_performance_summary."""
+    sd = z.system.SystemData
+    wl = sd.Wavelengths
+    prim = next((i for i in range(1, wl.NumberOfWavelengths + 1)
+                 if wl.GetWavelength(i).IsPrimary), 1)
+    w = wave or prim
+    lam_um = float(wl.GetWavelength(w).Wavelength)
+    units = str(sd.Units.LensUnits)
+    img = z.system.LDE.NumberOfSurfaces - 1
+    fno = _op(z, "WFNO", 0, w)
+    # paraxial marginal ray at the image surface: height y, direction cosines b, c
+    y, b, c = (_op(z, n, img, w, 0, 0, 0, 1) for n in ("PARY", "PARB", "PARC"))
+    afocal = abs(b) < 1e-9
+    defocus = float("inf") if afocal else -y * c / b  # paraxial focus - image plane
+    # image distance from the last powered surface (skips trailing dummy surfaces)
+    lde = z.system.LDE
+    last = max((i for i in range(1, img) if math.isfinite(float(lde.GetSurfaceAt(i).Radius))
+                or str(lde.GetSurfaceAt(i).Material).strip()
+                or "Standard" not in str(lde.GetSurfaceAt(i).TypeName)), default=img - 1)
+    image_distance = sum(float(lde.GetSurfaceAt(i).Thickness) for i in range(last, img))
+    first = {
+        "efl": _op(z, "EFFL", 0, w), "working_fno": fno,
+        "image_space_fno": _op(z, "ISFN", 0, w), "total_track": _op(z, "TOTR"),
+        "paraxial_image_height": _op(z, "PIMH", 0, w),
+        "magnification": _op(z, "PMAG", 0, w),
+        "entrance_pupil_dia": _op(z, "EPDI"), "entrance_pupil_pos": _op(z, "ENPP"),
+        "exit_pupil_dia": _op(z, "EXPD"), "exit_pupil_pos": _op(z, "EXPP"),
+        "infinite_object": math.isinf(float(z.system.LDE.GetSurfaceAt(0).Thickness)),
+        "afocal_output": afocal, "paraxial_defocus": defocus,
+        "image_distance": image_distance, "last_powered_surface": last,
+        "focus_from_last_surface": image_distance + defocus,
+        "depth_of_focus": 2 * lam_um * _UM_TO_LENS_UNITS.get(units, 1e-3) * fno ** 2,
+        "airy_radius_um": 1.22 * lam_um * fno, "wavelength_um": lam_um, "units": units,
+    }
+    spots = zemax_spot_rms()["rms_spot_by_field"]
+    trace = _marginal_trace(z, w)
+    per_field = []
+    for n, x, yf, hx, hy in _fields(z):
+        wfe = _op(z, "RWCE", 3, wave, hx, hy)
+        row = {"field": n, "x": x, "y": yf, "rms_wfe_waves": wfe,
+               "strehl_marechal": math.exp(-(2 * math.pi * wfe) ** 2),
+               "diffraction_limited": wfe <= 0.0714,
+               "rms_spot_um": spots[n - 1] if n <= len(spots) else float("nan"),
+               "distortion_pct": _op(z, "DIMX", n, w), **trace[n]}
+        if mtf_freq:
+            row["mtf"] = _op(z, "MTFA", 3, wave, n, mtf_freq)
+        per_field.append(row)
+    summary = {k: first[k] for k in (
+        "efl", "working_fno", "image_space_fno", "total_track", "paraxial_image_height",
+        "magnification", "entrance_pupil_dia", "exit_pupil_dia", "paraxial_defocus")}
+    summary.update(
+        rms_wfe_waves=max(r["rms_wfe_waves"] for r in per_field),
+        strehl=min(r["strehl_marechal"] for r in per_field),
+        diffraction_limited=all(r["diffraction_limited"] for r in per_field),
+        rms_spot_um=max(r["rms_spot_um"] for r in per_field),
+        distortion_pct=max(abs(r["distortion_pct"]) for r in per_field),
+        vignetted_rays=sum(r["vignetted"] for r in per_field),
+        ray_errors=sum(r["ray_errors"] for r in per_field))
+    if mtf_freq:
+        summary["mtf"] = min(r["mtf"] for r in per_field)
+    return {"first_order": first, "per_field": per_field, "summary": summary}
+
+
+@mcp.tool()
+def zemax_performance_summary(wave: int = 0, mtf_freq: Optional[float] = None) -> dict:
+    """'Is it good?' in one call.
+
+    first_order: EFL, working / image-space F#, total track, paraxial image height,
+    magnification, entrance/exit pupil size and position, whether the output is
+    afocal, paraxial_defocus (paraxial focus minus image plane; 0 = in focus),
+    depth_of_focus (+/- 2*lambda*F#^2) and the Airy radius.
+    per_field: RMS wavefront error (waves), Strehl (Marechal approximation
+    exp(-(2*pi*sigma)^2), good for sigma < ~0.1 wave), diffraction-limited flag
+    (sigma <= 0.0714), polychromatic RMS spot (um), distortion %, vignetted /
+    failed pupil-edge rays, and MTF at mtf_freq (cycles per lens unit) if given.
+    summary: the worst case over fields (what zemax_verify_spec checks).
+    wave: wavelength number for wavefront/MTF (0 = polychromatic); first-order
+    values use the primary wavelength when wave = 0."""
+    z = _require()
+    return _ok(**_performance(z, wave, mtf_freq))
+
+
+@mcp.tool()
+def zemax_design_audit(min_edge: float = 1.0, max_aoi_deg: float = 30.0,
+                       max_dia_to_ct: float = 10.0, max_sd_over_r: float = 0.8,
+                       max_fno: float = 100.0) -> dict:
+    """'Is it right?': automatic design-review checks, ranked error > warn > info.
+
+    Checks (thresholds are rules of thumb, adjustable):
+    - image plane off paraxial focus by more than the depth of focus;
+    - afocal output, or nearly collimated output (working F# > max_fno), while the
+      system is not in afocal mode;
+    - glass edge thickness < min_edge (lens units); air gaps that collide at the edge;
+    - element diameter / centre thickness > max_dia_to_ct (hard to mount and polish);
+    - steep surfaces: semi-diameter / |R| > max_sd_over_r (hard to polish and test);
+    - angle of incidence > max_aoi_deg on any surface (coatings get hard);
+    - pupil-edge rays that fail (TIR, missed surface) or are vignetted;
+    - fields that are not diffraction limited.
+    Each finding has the numbers and a suggested fix."""
+    z = _require()
+    perf = _performance(z)
+    fo = perf["first_order"]
+    u = fo["units"]
+    lde = z.system.LDE
+    img = lde.NumberOfSurfaces - 1
+    w = next((i for i in range(1, z.system.SystemData.Wavelengths.NumberOfWavelengths + 1)
+              if z.system.SystemData.Wavelengths.GetWavelength(i).IsPrimary), 1)
+    findings: list[dict] = []
+
+    def add(severity, check, detail, fix, surface=None):
+        findings.append({"severity": severity, "check": check, "surface": surface,
+                         "detail": detail, "fix": fix})
+
+    afocal_mode = bool(z.system.SystemData.Aperture.AFocalImageSpace)
+    if fo["afocal_output"] and not afocal_mode:
+        add("warn", "afocal_output",
+            "The marginal ray leaves the last surface parallel: the output is "
+            "collimated, but the system is not in afocal mode, so spot/WFE/MTF at the "
+            "image plane are not meaningful.",
+            "Turn on System Explorer > Aperture > Afocal Image Space, or add an ideal "
+            "(Paraxial) lens to evaluate the collimated beam.")
+    elif not fo["afocal_output"] and abs(fo["paraxial_defocus"]) > fo["depth_of_focus"]:
+        fix = ("Refocus: zemax_quick_focus, or a MarginalRayHeight solve (Height 0) on "
+               "the last thickness." if fo["infinite_object"] else
+               "Move the image plane; if the image distance is fixed (collimator, beam "
+               "projector), adjust the object-to-lens spacing instead.")
+        add("warn", "defocus",
+            f"Paraxial focus is {fo['paraxial_defocus']:+.4g} {u} from the image plane: "
+            f"the beam focuses {fo['focus_from_last_surface']:.4g} {u} after surface "
+            f"{fo['last_powered_surface']}, the image plane is {fo['image_distance']:.4g} "
+            f"{u} after it; depth of focus is only +/-{fo['depth_of_focus']:.3g} {u}.", fix)
+    if not fo["afocal_output"] and not afocal_mode and fo["working_fno"] > max_fno:
+        add("warn", "near_afocal",
+            f"Output is nearly collimated (working F/# {fo['working_fno']:.4g}, image "
+            f"{fo['image_distance']:.4g} {u} away): spot sizes and focus tolerances in "
+            f"{u} scale with that distance.",
+            "For a beam director, telescope or collimator, evaluate in afocal mode "
+            "(angular aberrations); otherwise confirm the conjugates are intended.")
+
+    for i in range(1, img):
+        s = lde.GetSurfaceAt(i)
+        mat = str(s.Material).strip()
+        if "Coordinate" in str(s.TypeName):
+            continue
+        sd, r = float(s.SemiDiameter), float(s.Radius)
+        if math.isfinite(r) and r and sd / abs(r) > max_sd_over_r:
+            add("error" if sd / abs(r) >= 1 else "warn", "steep_surface",
+                f"Semi-diameter / |R| = {sd / abs(r):.2f} (SD {sd:.4g}, R {r:.4g}).",
+                "Split the power over more surfaces or use a less bent shape.", i)
+        if i + 1 >= img or mat.upper() == "MIRROR":
+            continue
+        edge = _op(z, "ETVA", i)
+        if mat:  # glass element from surface i to i+1
+            ct = float(s.Thickness)
+            dia = 2 * max(sd, float(lde.GetSurfaceAt(i + 1).SemiDiameter))
+            if edge < min_edge:
+                add("error" if edge <= 0 else "warn", "edge_thickness",
+                    f"Glass edge thickness {edge:.3g} {u} < {min_edge} {u}.",
+                    "Increase centre thickness or reduce the clear aperture; add a "
+                    "glass boundary (MNEG/MNET) to the merit function.", i)
+            if ct > 0 and dia / ct > max_dia_to_ct:
+                add("warn", "aspect_ratio",
+                    f"Diameter / centre thickness = {dia / ct:.1f} "
+                    f"(D {dia:.4g}, CT {ct:.4g} {u}).",
+                    "Thicken the element (rule of thumb D/CT <= 6-10).", i)
+        elif edge < 0:
+            add("error", "edge_collision",
+                f"Air gap edge thickness {edge:.3g} {u}: the elements overlap at the edge.",
+                "Increase the air space or add an air boundary (MNEA) to the merit "
+                "function.", i)
+
+    edge_rays = ((0, 0), (0, 1), (0, -1), (1, 0), (-1, 0))
+    for i in range(1, img + 1):
+        aoi = max(_op(z, "RAID", i, w, hx, hy, px, py)
+                  for _, _, _, hx, hy in _fields(z) for px, py in edge_rays)
+        if aoi > max_aoi_deg:
+            add("warn", "angle_of_incidence",
+                f"Max angle of incidence {aoi:.1f} deg > {max_aoi_deg} deg.",
+                "Expect costly/polarizing coatings; bend the surface or split its "
+                "power.", i)
+
+    for r in perf["per_field"]:
+        if r["ray_errors"]:
+            add("error", "ray_errors",
+                f"Field {r['field']}: {r['ray_errors']} of 4 pupil-edge rays fail "
+                "(TIR or missed surface).",
+                "Check semi-diameters, surface shapes and the aperture definition.")
+        if r["vignetted"]:
+            add("info", "vignetting",
+                f"Field {r['field']}: {r['vignetted']} of 4 pupil-edge rays vignetted "
+                f"at surface(s) {r['vignetted_at']}.",
+                "Fine if intended; otherwise enlarge that semi-diameter or set "
+                "vignetting factors.", r["vignetted_at"][0])
+        if not r["diffraction_limited"]:
+            add("info", "not_diffraction_limited",
+                f"Field {r['field']}: RMS WFE {r['rms_wfe_waves']:.3g} waves "
+                f"(> 0.0714), Strehl ~{r['strehl_marechal']:.2f}.",
+                "Fine for geometric-blur-limited designs; otherwise optimize on "
+                "wavefront.")
+
+    order = {"error": 0, "warn": 1, "info": 2}
+    findings.sort(key=lambda f: order[f["severity"]])
+    counts = {k: sum(f["severity"] == k for f in findings) for k in order}
+    return _ok(counts=counts, findings=findings, summary=perf["summary"])
+
+
+def _check(name: str, value, lim) -> dict:
+    if not isinstance(lim, dict):  # bare value -> must equal (e.g. diffraction_limited: true)
+        return {"requirement": name, "value": value, "equals": lim, "pass": value == lim}
+    lo, hi = lim.get("min"), lim.get("max")
+    ok = (lo is None or value >= lo) and (hi is None or value <= hi)
+    return {"requirement": name, "value": value, "min": lo, "max": hi, "pass": ok}
+
+
+@mcp.tool()
+def zemax_verify_spec(spec: dict | str) -> dict:
+    """'Does it meet my spec?': pass/fail per requirement.
+
+    spec is a dict or the path of a JSON file kept with the project. Keys are
+    zemax_performance_summary 'summary' metrics with min and/or max, or a bare value
+    to match exactly, e.g.
+      {"efl": {"min": 99, "max": 101}, "working_fno": {"max": 4.2},
+       "rms_wfe_waves": {"max": 0.07}, "distortion_pct": {"max": 1},
+       "mtf": {"freq": 50, "min": 0.3}, "diffraction_limited": true,
+       "operands": [{"name": "coupling", "operand": "FICL", "params": [...],
+                     "min": 0.6}]}
+    'operands' checks any merit operand (see zemax_operand) for anything else."""
+    if isinstance(spec, str):
+        with open(spec, encoding="utf-8") as fh:
+            spec = json.load(fh)
+    spec = dict(spec)
+    ops = spec.pop("operands", [])
+    z = _require()
+    s = _performance(z, mtf_freq=(spec.get("mtf") or {}).get("freq"))["summary"]
+    unknown = [k for k in spec if k not in s]
+    if unknown:
+        raise ValueError(f"Unknown spec metric(s) {unknown}; valid: {sorted(s)} "
+                         "or 'operands'")
+    rows = [_check(k, s[k], lim) for k, lim in spec.items()]
+    rows += [_check(o.get("name", o["operand"]),
+                    _op(z, o["operand"], *o.get("params", [])), o) for o in ops]
+    return _ok(all_pass=all(r["pass"] for r in rows), requirements=rows)
+
+
+@mcp.prompt()
+def zemax_review(spec: str = "") -> str:
+    """Expert design review of the system open in OpticStudio."""
+    spec_step = (f"zemax_verify_spec with spec='{spec}'." if spec else
+                 "If the user has requirements, check them with zemax_verify_spec; "
+                 "otherwise list the requirements you would need (EFL, F/#, FOV, band, "
+                 "WFE/MTF, envelope, environment).")
+    return f"""Review the optical design open in OpticStudio as a senior optical designer.
+Connect first (zemax_connect) if needed. Then:
+1. zemax_info and zemax_lde_summary: what is this system (imager, collimator, afocal
+   telescope, relay), its conjugates and units?
+2. zemax_layout_image, then Read the PNG at wsl_path and look at it: ray paths,
+   folds, element shapes, anything physically odd.
+3. zemax_performance_summary (pass mtf_freq if the application implies one, e.g. a
+   sensor's Nyquist frequency).
+4. zemax_design_audit.
+5. {spec_step}
+Then write the review:
+- Verdict in one line (fit for purpose / needs work / wrong).
+- Findings ranked by impact, each with the numbers, why it matters for THIS
+  application, and a concrete fix (which surface, which tool or operand).
+- Requirement pass/fail table, if a spec was checked.
+- Not checked by these tools (say so explicitly): tolerancing/yield
+  (zemax_run_tolerancing), stray light and ghosts, polarization, thermal and
+  structural effects, coatings.
+Do not change the design during the review."""
+
+
 # ============================================================= NON-SEQUENTIAL (NSC)
 @mcp.tool()
 def zemax_nsc_summary() -> dict:
@@ -1061,37 +1375,123 @@ def zemax_tde_summary() -> dict:
 
 
 @mcp.tool()
-def zemax_tolerance_wizard() -> dict:
-    """Build a default tolerance set via the Tolerancing Wizard (radius, thickness,
-    decenter, tilt, index/abbe, irregularity, ...). Returns the new operand count."""
+def zemax_tolerance_wizard(settings: Optional[dict] = None) -> dict:
+    """Build a default tolerance set with the Tolerancing Wizard. It replaces the TDE,
+    so a snapshot is saved first. settings are wizard properties, e.g.
+      {"SurfaceRadius": 0.1, "SurfaceThickness": 0.05, "SurfaceDecenterX": 0.02,
+       "SurfaceTiltX": 0.02, "ElementDecenterX": 0.05, "ElementTiltXDegrees": 0.05,
+       "IsIndexUsed": False, "IsSurfaceSandAIrregularityUsed": True}
+    (Is<Name>Used switches a tolerance type on/off). A bad key lists the valid ones.
+    Returns the new operand count."""
     z = _require()
-    z.system.TDE.SEQToleranceWizard.Apply()
-    return _ok(operands=z.system.TDE.NumberOfOperands)
+    wiz = z.system.TDE.SEQToleranceWizard
+    _set_props(wiz, settings)
+    snap = _snapshot(z, "pre-tol-wizard")
+    wiz.OK()
+    return _ok(operands=z.system.TDE.NumberOfOperands, snapshot=snap)
+
+
+def _tolerance_results(z: ZemaxSession, ztd: str, threshold: Optional[float] = None,
+                       top: int = 10) -> dict:
+    """Read a tolerancing result file (.ZTD) through the Tolerance Data Viewer."""
+    with _tool(z, "OpenToleranceDataViewer") as v:
+        v.FileName = ztd
+        v.RunAndWaitForCompletion()
+        if not v.Succeeded:
+            raise RuntimeError(f"Could not read {ztd}: {v.ErrorMessage}")
+        sens, mc = v.SensitivityData, v.MonteCarloData
+        crit = sens.GetCriterion(0)
+        name = str(crit.Name)
+        ops = []
+        for i in range(sens.NumberOfResultOperands):
+            op = sens.GetOperand(i)
+            eff = op.GetEffectOnCriterion(0)
+            par = {str(p.Name): p.IntValue if p.IsInt else p.DoubleValue
+                   for p in (op.GetParameter(k) for k in range(op.NumberOfParameters))}
+            ops.append({"type": str(op.OperandType),
+                        "surfaces": [v for k, v in par.items() if k.startswith("Surface")],
+                        "min": float(op.Minimum), "max": float(op.Maximum),
+                        "change_at_min": float(eff.EstimatedChangeMinimum),
+                        "change_at_max": float(eff.EstimatedChangeMaximum),
+                        "comment": str(op.Comment or "")})
+        ops.sort(key=lambda o: -max(abs(o["change_at_min"]), abs(o["change_at_max"])))
+        comps = {str(sens.GetCompensator(i).Name) for i in range(sens.NumberOfCompensators)}
+        vals = mc.Values
+        runs = [float(vals.Data[r, 0]) for r in range(vals.Rows)]
+        comp_stats = {}
+        for c in range(1, vals.Cols):
+            meta = mc.GetMetadata(c)
+            if str(meta.Name) in comps:
+                st = meta.SummaryStatistics
+                comp_stats[str(meta.Name)] = {"min": float(st.Minimum), "max": float(st.Maximum),
+                                              "mean": float(st.Mean),
+                                              "std": float(st.SampleStandardDeviation)}
+        report = str(v.Summary or "")
+    lower_better = "MTF" not in name.upper()
+    out: dict[str, Any] = {
+        "ztd": ztd, "criterion": name, "nominal": float(crit.NominalValue),
+        "lower_is_better": lower_better, "operands": len(ops),
+        "worst_offenders": ops[:top], "compensators": comp_stats,
+        "warnings": [l.strip() for l in report.splitlines() if l.startswith("WARNING")],
+    }
+    if runs:
+        out["monte_carlo"] = {
+            "runs": len(runs), "mean": statistics.fmean(runs),
+            "std": statistics.stdev(runs) if len(runs) > 1 else 0.0,
+            "best": min(runs) if lower_better else max(runs),
+            "worst": max(runs) if lower_better else min(runs),
+            # OpticStudio's own yield lines, e.g. "90% > 0.0087": 90% of builds are
+            # better than 0.0087
+            "percentiles": {m.group(1) + "%": float(m.group(2)) for m in
+                            re.finditer(r"^\s*(\d+)%\s*[<>]\s*([-+\d.Ee]+)", report, re.M)},
+        }
+        if threshold is not None:
+            good = sum(r <= threshold if lower_better else r >= threshold for r in runs)
+            out["threshold"] = threshold
+            out["yield_pct"] = 100.0 * good / len(runs)
+    return out
 
 
 @mcp.tool()
-def zemax_run_tolerancing(monte_carlo_runs: int = 20) -> dict:
-    """Run a Monte Carlo tolerancing analysis over the current TDE tolerances.
-    Returns whether it succeeded, the number of MC runs, how many statistics rows
-    were produced, and the result file path (open it for the full report)."""
+def zemax_run_tolerancing(mode: str = "Sensitivity", criterion: str = "RMSSpotRadius",
+                          compensator: str = "ParaxialFocus", monte_carlo_runs: int = 20,
+                          threshold: Optional[float] = None,
+                          settings: Optional[dict] = None) -> dict:
+    """Run tolerancing over the TDE tolerances and return the results.
+
+    mode: 'Sensitivity' (sensitivity + Monte Carlo), 'InverseLimit',
+    'InverseIncrement', 'SkipSensitivity' (Monte Carlo only).
+    criterion: 'RMSSpotRadius', 'RMSWavefront', 'DiffMTFAverage', 'BoresightError',
+    'MeritFunction' (your own MFE, e.g. a FICL fiber-coupling row), ...
+    compensator: 'ParaxialFocus', 'OptimizeAll_DLS', 'None'.
+    threshold: criterion value that counts as a good build -> yield_pct.
+    settings: other Tolerancing tool properties, e.g. {"CriterionSampling": 3,
+    "MonteCarloStatistic": "Normal", "MTFFrequency": 30}.
+    Returns the nominal criterion, the worst offenders (largest criterion change),
+    Monte Carlo statistics with OpticStudio's yield percentiles ("90%": 90% of
+    builds are better than this), compensator ranges and setup warnings. Results go
+    to <lens>.ZTD next to the lens file; zemax_tolerance_results re-reads them.
+    For a fast yield estimate without Monte Carlo, try zemax_analysis_text("QuickYield")."""
     z = _require()
     with _tool(z, "OpenTolerancing") as tol:
-        try:
-            tol.NumberOfRuns = int(monte_carlo_runs)
-        except Exception:
-            pass
+        _set_props(tol, {"SetupMode": mode, "Criterion": criterion,
+                         "CriterionComp": compensator, "NumberOfRuns": monte_carlo_runs,
+                         "SaveTolDataFile": True, **(settings or {})})
         tol.RunAndWaitForCompletion()
-        out: dict[str, Any] = {"succeeded": bool(tol.Succeeded),
-                               "monte_carlo_runs": monte_carlo_runs}
-        try:
-            out["statistics_rows"] = tol.NumberOfMonteCarloStatistics
-        except Exception:
-            pass
-        try:
-            out["result_file"] = str(tol.ResultFilename)
-        except Exception:
-            pass
-    return _ok(**out)
+        if not tol.Succeeded:
+            raise RuntimeError(f"Tolerancing failed: {tol.ErrorMessage}")
+        ztd = os.path.join(os.path.dirname(str(z.system.SystemFile)), str(tol.TolDataFile))
+    return _ok(**_tolerance_results(z, ztd, threshold))
+
+
+@mcp.tool()
+def zemax_tolerance_results(ztd: str = "", threshold: Optional[float] = None) -> dict:
+    """Re-read tolerancing results without re-running (same output as
+    zemax_run_tolerancing). ztd defaults to <lens>.ZTD next to the open lens file."""
+    z = _require()
+    if not ztd:
+        ztd = os.path.splitext(str(z.system.SystemFile))[0] + ".ZTD"
+    return _ok(**_tolerance_results(z, ztd, threshold))
 
 
 # ====================================================== SNAPSHOTS / UNDO / RECOVERY

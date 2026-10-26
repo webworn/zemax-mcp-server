@@ -9,8 +9,8 @@ extension slot):
     python.exe examples/tools_check.py
 
 Each step reports PASS/FAIL and the run continues, so one armed connection shows
-every failure. WARNING: replaces the design open in the GUI with a test singlet;
-the open design is snapshotted first and its path printed (zemax_restore it).
+every failure. WARNING: replaces the design open in the GUI (test singlet, sample and
+project designs); it is snapshotted first and restored at the end.
 """
 
 import os
@@ -127,9 +127,45 @@ def restore(snap, radius):
     check(S._same(S.zemax_lde_summary()["surfaces"][1]["radius"], radius), "radius not restored")
 
 
+def review(path, check_fn):
+    """Load a design with a known answer and check the review tools agree."""
+    if not os.path.exists(path):
+        return f"skipped: {path} not found"
+    S.zemax_open_file(path)
+    p = S.zemax_performance_summary()
+    a = S.zemax_design_audit()
+    check_fn(p["summary"], {f["check"] for f in a["findings"]})
+    return a["counts"]
+
+
+def rc_telescope(s, checks):
+    # OGS-1: f/10 RC, EFL 5000 mm, diffraction limited
+    check(abs(s["efl"] - 5000) < 1 and abs(s["working_fno"] - 10) < 0.1, s)
+    check(s["diffraction_limited"] and s["strehl"] > 0.99, s)
+    spec = S.zemax_verify_spec({"efl": {"min": 4950, "max": 5050}, "diffraction_limited": True})
+    check(spec["all_pass"], spec)
+    check(not S.zemax_verify_spec({"efl": {"max": 4000}})["all_pass"], "impossible spec passed")
+
+
+def tolerancing():
+    S.zemax_open_file(os.path.join(str(S._session.application.SamplesDir),
+                                   r"Sequential\Objectives\Double Gauss 28 degree field.zmx"))
+    S.zemax_save_file(os.path.join(S._out_dir(S._session, "tolerancing"), "dg28.zmx"))
+    S.zemax_tolerance_wizard({"SurfaceRadius": 0.1, "SurfaceThickness": 0.05,
+                              "ElementDecenterX": 0.05, "IsIndexUsed": False})
+    r = S.zemax_run_tolerancing(monte_carlo_runs=20, threshold=0.02)
+    check(r["worst_offenders"] and r["worst_offenders"][0]["surfaces"], r["worst_offenders"][:1])
+    check(r["monte_carlo"]["runs"] == 20 and "90%" in r["monte_carlo"]["percentiles"], r)
+    check(r["yield_pct"] is not None, r)
+    again = S.zemax_tolerance_results(threshold=0.02)
+    check(again["monte_carlo"] == r["monte_carlo"], "re-read differs")
+    return r["monte_carlo"]["percentiles"], r["yield_pct"]
+
+
 def main():
     S._session = connect("extension")
-    step("snapshot original design", lambda: S.zemax_snapshot("before-tools-check")["path"])
+    original = step("snapshot original design",
+                    lambda: S.zemax_snapshot("before-tools-check")["path"])
     step("build aspheric singlet", build)
     step("stale-tool recovery", stale_tool)
     step("variables + solve + summary", variables)
@@ -145,7 +181,22 @@ def main():
     step("layout image", image)
     if snap:
         step("restore", lambda: restore(snap, radius))
+
+    # --- item 3: review tools against designs with known answers
+    step("review OGS-1 RC telescope", lambda: review(
+        r"D:\Claude_code\ogs\Projects\OGS-1_RC_telescope.zmx", rc_telescope))
+    step("review FSOC collimator (defocus)", lambda: review(
+        r"D:\Claude_code\Zemax plugin\Projects\fc-apc connector with bk7 lens.zmx",
+        lambda s, checks: check("defocus" in checks, checks)))
+    step("review opm_naren (near afocal)", lambda: review(
+        r"D:\Claude_code\Zemax plugin\Projects\opm_naren.zmx",
+        lambda s, checks: check("near_afocal" in checks, checks)))
+    # --- item 4: tolerancing results, sensitivity, yield
+    step("tolerancing + results + yield", tolerancing)
+
     step("cleanup", S.zemax_cleanup)
+    if original:
+        step("restore original design", lambda: S.zemax_restore(original))
     print("FAILED:", failures if failures else "none - ALL CHECKS PASSED")
 
 

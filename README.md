@@ -165,8 +165,16 @@ substitution) · `zemax_set_solve` (marginal-ray focus, F/#, pickups, …)
 `zemax_analysis_series` (x/y curves for ray fans / MTF) — all take MODIFYSETTINGS
 `settings` · `zemax_layout_image` (PNG of the layout) ·
 `zemax_batch_ray_trace` (fast normalized ray trace)
+**Review:** `zemax_performance_summary` ("is it good?": first-order data, WFE/Strehl,
+spot, distortion, MTF, vignetting) · `zemax_design_audit` ("is it right?": defocus,
+afocal output, edge thickness, aspect ratio, steep surfaces, angles of incidence,
+ray failures) · `zemax_verify_spec` ("does it meet my spec?", JSON) · prompt
+`/mcp__zemax__zemax_review` (full expert review)
 **Multi-config:** `zemax_mce_summary` · `zemax_mce_add_config` · `zemax_mce_add_operand`
-**Tolerancing:** `zemax_tde_summary` · `zemax_tolerance_wizard` · `zemax_run_tolerancing`
+**Tolerancing:** `zemax_tde_summary` · `zemax_tolerance_wizard` (with settings) ·
+`zemax_run_tolerancing` (sensitivity + Monte Carlo → worst offenders, yield
+percentiles, yield at a threshold, compensator range) · `zemax_tolerance_results`
+(re-read a .ZTD)
 **Non-sequential:** `zemax_nsc_summary` · `zemax_nsc_ray_trace` · `zemax_nsc_detector_data`
 **Advanced:** `zemax_eval` (gated escape hatch for un-wrapped calls)
 
