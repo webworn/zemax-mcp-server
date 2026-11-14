@@ -45,7 +45,7 @@ except ImportError as exc:  # pragma: no cover
         "The 'mcp' package is required: `pip install \"mcp[cli]\"` under Windows Python."
     ) from exc
 
-from .connection import ZemaxSession, connect, ZemaxConnectionError
+from .connection import ZemaxSession, connect
 
 mcp = FastMCP("zemax")
 
@@ -78,20 +78,6 @@ def _sanitize(v):
 
 def _ok(**kw) -> dict:
     return _sanitize({"ok": True, **kw})
-
-
-def _new_analysis(z: ZemaxSession, analysis_type: str):
-    """Open an analysis by AnalysisIDM name, guarding the None return that means the
-    OpticStudio session is wedged (typically after many rapid reconnect cycles)."""
-    idm = getattr(z.zosapi.Analysis.AnalysisIDM, analysis_type)
-    a = z.system.Analyses.New_Analysis(idm)
-    if a is None:
-        raise RuntimeError(
-            f"New_Analysis('{analysis_type}') returned None. The OpticStudio session "
-            "looks unhealthy (often caused by many rapid connect/New/disconnect cycles). "
-            "Restart OpticStudio, re-arm Programming > Interactive Extension, then reconnect."
-        )
-    return a
 
 
 def _close_tool(t) -> bool:
@@ -141,9 +127,13 @@ def _apply_settings(a, analysis_type: str, settings: dict) -> None:
 
 @contextmanager
 def _analysis(z: ZemaxSession, analysis_type: str, settings: Optional[dict] = None):
-    """Open an analysis, apply settings, run it, yield its results, always close it
-    (unclosed analyses pile up as windows in the GUI)."""
-    a = _new_analysis(z, analysis_type)
+    """Open an analysis by AnalysisIDM name, apply settings, run it, yield its results,
+    always close it (unclosed analyses pile up as windows in the GUI)."""
+    a = z.system.Analyses.New_Analysis(getattr(z.zosapi.Analysis.AnalysisIDM, analysis_type))
+    if a is None:  # the OpticStudio session itself is unhealthy
+        raise RuntimeError(
+            f"New_Analysis('{analysis_type}') returned None. Try zemax_cleanup; if that "
+            "doesn't help, restart OpticStudio, re-arm Interactive Extension, reconnect.")
     try:
         if settings:
             _apply_settings(a, analysis_type, settings)
@@ -336,11 +326,12 @@ def zemax_connect(mode: str = "extension") -> dict:
 
 
 @mcp.tool()
-def zemax_disconnect(save: bool = False) -> dict:
-    """Drop the ZOS-API connection. In standalone mode this closes the headless process."""
+def zemax_disconnect() -> dict:
+    """Drop the ZOS-API connection. In standalone mode this closes the headless process
+    (save first with zemax_save_file)."""
     global _session
     if _session is not None:
-        _session.close(save=save)
+        _session.close()
         _session = None
     return _ok(disconnected=True)
 
@@ -674,13 +665,6 @@ def zemax_mfe_remove(row: Optional[int] = None, count: int = 1) -> dict:
     return _ok(operands=mfe.NumberOfOperands, snapshot=snap)
 
 
-@mcp.tool()
-def zemax_merit_value() -> dict:
-    """Return the current merit function value (lower is better)."""
-    z = _require()
-    return _ok(merit=float(z.system.MFE.CalculateMeritFunction()))
-
-
 _CYCLES = {0: "Automatic", 1: "Fixed_1_Cycle", 5: "Fixed_5_Cycles",
            10: "Fixed_10_Cycles", 50: "Fixed_50_Cycles"}
 _OPTIMIZERS = {"local": "OpenLocalOptimization", "hammer": "OpenHammerOptimization",
@@ -741,15 +725,16 @@ def zemax_quick_focus() -> dict:
 def zemax_run_analysis(analysis_type: str, settings: Optional[dict] = None,
                        max_points: int = 16) -> dict:
     """Open an analysis by its ZOSAPI AnalysisIDM name, run it, and return the numeric
-    results if available. Examples: 'RayFan', 'StandardSpot', 'FftPsf', 'FftMtf',
-    'WavefrontMap', 'SeidelDiagram'.
+    results. Examples: 'RayFan', 'FftMtf', 'FftMtfvsField', 'OpticalPathFan', 'FftPsf',
+    'WavefrontMap'.
 
     settings: MODIFYSETTINGS keywords {keyword: value} (ZPL help > MODIFYSETTINGS),
     e.g. {"MTF_MAXF": 100}. Grid analyses (PSF, wavefront map) return min/max/mean/
     std over all grid points, the grid extent and labels, and the grid down-sampled
-    to about max_points x max_points. Series analyses (ray fan, MTF) report their
-    series count: use zemax_analysis_series for the curves. For anything else use
-    zemax_analysis_text.
+    to about max_points x max_points. Series analyses (ray fan, MTF) return their x/y
+    curves (x label, per-curve labels such as field or wavelength) down-sampled to
+    about max_points points; pass e.g. max_points=40 for finer curves. For anything
+    else use zemax_analysis_text.
     """
     z = _require()
     out: dict[str, Any] = {"analysis": analysis_type}
@@ -779,9 +764,20 @@ def zemax_run_analysis(analysis_type: str, settings: Optional[dict] = None,
                            for i in range(0, n0, s0)],
             }
         elif res.NumberOfDataSeries > 0:
-            out["data_series_count"] = res.NumberOfDataSeries
-            out["note"] = ("Series (x/y) analysis; call zemax_analysis_series "
-                           "to get the actual curve values.")
+            out["series"] = []
+            for i in range(res.NumberOfDataSeries):
+                ds = res.GetDataSeries(i)
+                xs = list(ds.XData.Data)
+                yd = ds.YData.Data
+                npts, ncurves = yd.GetLength(0), yd.GetLength(1)
+                idxs = range(0, npts, max(1, npts // max(1, max_points)))
+                labels = [str(x) for x in ds.SeriesLabels]
+                out["series"].append({
+                    "description": str(ds.Description), "x_label": str(ds.XLabel),
+                    "x": [float(xs[r]) for r in idxs],
+                    "curves": [{"label": labels[c] if c < len(labels) else str(c),
+                                "y": [float(yd[r, c]) for r in idxs]}
+                               for c in range(ncurves)]})
         else:
             out["note"] = "No numeric grid/series exposed; use zemax_analysis_text."
     return _ok(**out)
@@ -922,7 +918,8 @@ def _performance(z: ZemaxSession, wave: int = 0, mtf_freq: Optional[float] = Non
         "image_distance": image_distance, "last_powered_surface": last,
         "focus_from_last_surface": image_distance + defocus,
         "depth_of_focus": 2 * lam_um * _UM_TO_LENS_UNITS.get(units, 1e-3) * fno ** 2,
-        "airy_radius_um": 1.22 * lam_um * fno, "wavelength_um": lam_um, "units": units,
+        "airy_radius_um": 1.22 * lam_um * fno, "wave": w, "wavelength_um": lam_um,
+        "units": units,
     }
     spots = zemax_spot_rms()["rms_spot_by_field"]
     trace = _marginal_trace(z, w)
@@ -995,8 +992,7 @@ def zemax_design_audit(min_edge: float = 1.0, max_aoi_deg: float = 30.0,
     u = fo["units"]
     lde = z.system.LDE
     img = lde.NumberOfSurfaces - 1
-    w = next((i for i in range(1, z.system.SystemData.Wavelengths.NumberOfWavelengths + 1)
-              if z.system.SystemData.Wavelengths.GetWavelength(i).IsPrimary), 1)
+    w = fo["wave"]
     findings: list[dict] = []
 
     def add(severity, check, detail, fix, surface=None):
@@ -1178,7 +1174,7 @@ def zemax_nsc_summary() -> dict:
 
 @mcp.tool()
 def zemax_nsc_ray_trace(split: bool = True, scatter: bool = False,
-                        clear_detectors: bool = True, rays: int = 100000) -> dict:
+                        clear_detectors: bool = True) -> dict:
     """Run a Non-Sequential ray trace (for illumination / stray-light).
     split=True enables ray splitting (transmit/reflect/absorb child rays);
     scatter=True enables scattering. clear_detectors=True zeroes all detectors
@@ -1263,39 +1259,6 @@ def zemax_batch_ray_trace(rays: list[list[float]], wavelength: int = 1,
     return _ok(surface=nsur, ray_type=ray_type, count=len(out), rays=out)
 
 
-# ================================================================ ANALYSIS SERIES
-@mcp.tool()
-def zemax_analysis_series(analysis_type: str, max_points: int = 40,
-                          settings: Optional[dict] = None) -> dict:
-    """Run an analysis and return its x/y CURVE data (ray fans, MTF-vs-frequency, ...).
-
-    Use this for series analyses where zemax_run_analysis only reports a count.
-    Examples: 'RayFan', 'FftMtf', 'FftMtfvsField', 'OpticalPathFan'. For each data
-    series it returns the x-axis label, the per-curve series labels (e.g. wavelength
-    or field), and decimated x plus y values (down-sampled to ~max_points).
-    settings: MODIFYSETTINGS keywords as in zemax_run_analysis.
-    """
-    z = _require()
-    series_out = []
-    with _analysis(z, analysis_type, settings) as res:
-        for i in range(res.NumberOfDataSeries):
-            ds = res.GetDataSeries(i)
-            xs = list(ds.XData.Data)
-            yd = ds.YData.Data
-            npts, ncurves = yd.GetLength(0), yd.GetLength(1)
-            step = max(1, npts // max(1, max_points))
-            idxs = list(range(0, npts, step))
-            labels = [str(x) for x in ds.SeriesLabels]
-            curves = [{"label": labels[c] if c < len(labels) else str(c),
-                       "y": [float(yd[r, c]) for r in idxs]}
-                      for c in range(ncurves)]
-            series_out.append({"description": str(ds.Description),
-                               "x_label": str(ds.XLabel),
-                               "x": [float(xs[r]) for r in idxs],
-                               "curves": curves})
-    return _ok(analysis=analysis_type, num_series=len(series_out), series=series_out)
-
-
 # =============================================================== MULTI-CONFIG (MCE)
 @mcp.tool()
 def zemax_mce_summary() -> dict:
@@ -1337,23 +1300,14 @@ def zemax_mce_add_operand(operand_type: str, param1: int = 0,
     values is a per-configuration list of numeric values (1st entry -> config 1).
     """
     z = _require()
-    ZOSAPI = z.zosapi
     mce = z.system.MCE
     mce.AddOperand()
     op = mce.GetOperandAt(mce.NumberOfOperands)
-    op.ChangeType(getattr(ZOSAPI.Editors.MCE.MultiConfigOperandType, operand_type))
+    op.ChangeType(getattr(z.zosapi.Editors.MCE.MultiConfigOperandType, operand_type))
     if param1:
-        try:
-            op.Param1 = int(param1)
-        except Exception:
-            pass
-    if values:
-        for c, v in enumerate(values, start=1):
-            if c <= mce.NumberOfConfigurations:
-                try:
-                    op.GetOperandCell(c).DoubleValue = float(v)
-                except Exception:
-                    pass
+        op.Param1 = int(param1)
+    for c, v in enumerate((values or [])[:mce.NumberOfConfigurations], start=1):
+        _set_cell(op.GetOperandCell(c), v)
     return _ok(operand_type=operand_type, row=op.OperandNumber,
                configurations=mce.NumberOfConfigurations)
 

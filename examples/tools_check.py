@@ -116,6 +116,20 @@ def grid():
     return {k: g[k] for k in ("shape", "min", "max", "mean", "std", "x_label", "value_label")}
 
 
+def series():
+    r = S.zemax_run_analysis("FftMtf", max_points=10)
+    check(r.get("series") and r["series"][0]["curves"][0]["y"], r)
+    return r["series"][0]["x_label"], len(r["series"][0]["x"])
+
+
+def multiconfig():
+    S.zemax_mce_add_config()
+    S.zemax_mce_add_operand("THIC", param1=1, values=[4, 5])
+    row = S.zemax_mce_summary()["rows"][-1]
+    check(row["type"] == "THIC" and row["values"][1].startswith("5"), row)
+    return row
+
+
 def image():
     img = S.zemax_layout_image()
     check(os.path.isfile(img["path"]), img)
@@ -178,6 +192,8 @@ def main():
         step("diff", lambda: diff(snap))
     step("analysis text w/ settings", text)
     step("analysis grid stats", grid)
+    step("analysis curves (series)", series)
+    step("multi-config operand", multiconfig)
     step("layout image", image)
     if snap:
         step("restore", lambda: restore(snap, radius))

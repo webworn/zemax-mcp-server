@@ -113,14 +113,13 @@ python.exe -m zemax_mcp.connection extension   # prints edition/serial if the ar
 |---|---|
 | `zemax_mcp/connection.py` | Non-invasive dual-mode connector (extension + standalone) via `ZOSAPI_NetHelper`. |
 | `zemax_mcp/server.py` | The **MCP server** — every ZOS-API feature exposed as a described tool. |
-| `docs/function-to-feature-catalog.md` | Master map: **GUI feature ↔ ZOS-API member ↔ what it does ↔ AI use-case**. |
-| `skills/sequential-design.md` | Playbook for **sequential** imaging design (aperture/fields/wavelengths → variables/solves → merit function → local/hammer/global optimization → aberration control), with runnable ZOS-API snippets. |
+| `skills/sequential-design.md` | Playbook for **sequential** imaging design (aperture/fields/wavelengths → variables/solves → merit function → local/hammer/global optimization → aberration control), step by step with the MCP tools. |
 | `skills/non-sequential-design.md` | Playbook for **non-sequential** work (illumination, stray light, scatter, sources/detectors, ray splitting, importance sampling). |
-| `examples/smoke_test.py` | End-to-end: build a singlet, optimize, print RMS spot. |
+| `examples/tools_check.py` | Live end-to-end check of the MCP tools (build, optimize, undo, analyses, review, tolerancing); PASS/FAIL per step. |
 | `examples/beam_stabilization.py` | Closed-loop **2-FSM aimpoint stabilization** on a real reflective telescope (converts it to NSC, senses the return, drives two FSMs). See [`docs/beam-stabilization-demo.md`](docs/beam-stabilization-demo.md). |
 | `examples/atmosphere_1080nm_2km.py` | **Atmospheric channel** for the 1.08 µm beam over 2 km — absorption (link budget) + scintillation (aperture averaging, fade) + turbulence tilt feeding the FSM loop, plus `delivered_power()` with first-order thermal blooming. See [`docs/atmosphere-1080nm-2km.md`](docs/atmosphere-1080nm-2km.md). |
 | `examples/blooming_split_step.py` | **Wave-optics split-step (BPM)** thermal-blooming model — propagates the complex field to the 2 km target with a nonlinear thermal phase; the trustworthy blooming Strehl / beam-bending numbers. Validated vs diffraction theory + the link budget. |
-| `requirements.txt` | Python deps to install under **Windows** Python: `pythonnet`, `mcp[cli]` (optional `zospy`). |
+| `requirements.txt` | Python deps to install under **Windows** Python: `pythonnet`, `mcp[cli]`. |
 | `setup/INSTALL.md` | Full setup + troubleshooting. |
 
 ---
@@ -158,12 +157,11 @@ restore snapshot automatically to `<Zemax data>\MCP\snapshots`
 substitution) · `zemax_set_solve` (marginal-ray focus, F/#, pickups, …)
 **Merit function:** `zemax_operand` (evaluate any operand: EFFL, TOTR, RWRE, FICL, …) ·
 `zemax_mfe_summary` (with % contribution) · `zemax_mfe_set_operand` · `zemax_mfe_remove` ·
-`zemax_merit_wizard` (with glass/air boundaries) · `zemax_merit_value`
+`zemax_merit_wizard` (with glass/air boundaries)
 **Optimize:** `zemax_optimize` (local/hammer/global, cycles, run time) · `zemax_quick_focus`
-**Analyze:** `zemax_run_analysis` (grid stats + data; RayFan, FftPsf, WavefrontMap, …) ·
-`zemax_analysis_text` (full text output of any analysis) · `zemax_spot_rms` ·
-`zemax_analysis_series` (x/y curves for ray fans / MTF) — all take MODIFYSETTINGS
-`settings` · `zemax_layout_image` (PNG of the layout) ·
+**Analyze:** `zemax_run_analysis` (grid stats + data, or x/y curves for ray fans /
+MTF) · `zemax_analysis_text` (full text output of any analysis) · `zemax_spot_rms` —
+all take MODIFYSETTINGS `settings` · `zemax_layout_image` (PNG of the layout) ·
 `zemax_batch_ray_trace` (fast normalized ray trace)
 **Review:** `zemax_performance_summary` ("is it good?": first-order data, WFE/Strehl,
 spot, distortion, MTF, vignetting) · `zemax_design_audit` ("is it right?": defocus,
@@ -178,9 +176,8 @@ percentiles, yield at a threshold, compensator range) · `zemax_tolerance_result
 **Non-sequential:** `zemax_nsc_summary` · `zemax_nsc_ray_trace` · `zemax_nsc_detector_data`
 **Advanced:** `zemax_eval` (gated escape hatch for un-wrapped calls)
 
-The tool set is intentionally extensible — the
-[function-to-feature catalog](docs/function-to-feature-catalog.md) is the roadmap
-for wrapping the rest of the API.
+The tool set is intentionally extensible: anything not wrapped yet is reachable
+through `zemax_eval`, and a pattern used often there is a candidate for a new tool.
 
 ---
 

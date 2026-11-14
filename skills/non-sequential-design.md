@@ -4,10 +4,12 @@ A practical methodology guide for designing and analyzing **non-sequential (NSC)
 systems — illumination, stray light, scatter, light pipes, LEDs, and detectors — and for
 driving each step through the ZOS-API from Python.
 
-This is the non-sequential companion to `sequential-design.md`. For the exact mapping
-between OpticStudio features and API members, cross-check `function-to-feature-catalog.md`.
-Where an API member below is marked **[verify]**, confirm the spelling/signature against
-that catalog before relying on it in production code.
+This is the non-sequential companion to `sequential-design.md`. NSC tracing and detector
+reads have MCP tools (`zemax_nsc_summary`, `zemax_nsc_ray_trace`,
+`zemax_nsc_detector_data`); building NSC systems does not yet, so the snippets below are
+run through `zemax_eval`. Where an API member is marked **[verify]**, confirm it live
+first (`zemax_eval` with `dir(...)`; direct attribute access works even when `dir()` of a
+namespace hides a type).
 
 > **API idioms used here.** Snippets assume a live session exposing `TheSystem`
 > (`IOpticalSystem`), `TheApplication`, and the `ZOSAPI` namespace, matching the bridge in
@@ -111,7 +113,7 @@ print("objects:", nce.NumberOfObjects)
 
 Objects are addressed by 1-based index. New rows are inserted, then their **type** is set by
 applying a type-settings object obtained from the object's `GetObjectTypeSettings` factory
-**[verify: exact type-settings enum names in the catalog]**.
+**[verify: exact type-settings enum names]**.
 
 ```python
 def add_object(nce, obj_type_enum):
@@ -232,7 +234,7 @@ the object's face/coating settings you assign:
 
 ```python
 # Face access is via the object's coating/scatter settings interface.
-# Exact members vary by object; confirm in the catalog. [verify]
+# Exact members vary by object; confirm live. [verify]
 face = lens.CoatScatterData.GetFaceData(0)     # [verify: face indexing / accessor]
 face.Coating = "AR"
 ```
@@ -489,7 +491,7 @@ numbers for an imaging lens without abandoning sequential aberration control.
 
 A source rectangle illuminates a diffuser/lens, and a detector rectangle downstream collects
 the flux. This is intentionally compact but structured like real ZOS-API code; treat member
-names flagged **[verify]** as items to confirm against the catalog.
+names flagged **[verify]** as items to confirm live.
 
 ```python
 import clr  # pythonnet, if driving a standalone connection
@@ -604,7 +606,7 @@ solid angle, and pruning dim child rays with the intensity threshold.
 can accelerate large scatter/splitting traces by 1–2 orders of magnitude over CPU. It is
 subject to feature/precision limitations (not every object, scatter model, or polarization
 option is supported), so validate a GPU result against a smaller CPU trace before trusting
-it for a spec. **[verify: current GPU support matrix and API toggle in the catalog.]**
+it for a spec. **[verify: current GPU support matrix and API toggle.]**
 
 **Sanity checks before trusting numbers.**
 

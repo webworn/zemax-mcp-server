@@ -98,9 +98,8 @@ class ZemaxSession:
     the API connection.
     """
 
-    def __init__(self, mode: Mode = "extension", install_path: str = ""):
+    def __init__(self, mode: Mode = "extension"):
         self.mode: Mode = mode
-        self._install_path = install_path
         self._zos = None          # ZOSAPI namespace module
         self._connection = None   # ZOSAPI.ZOSAPI_Connection
         self.application = None    # IZOSAPI_Application
@@ -121,7 +120,7 @@ class ZemaxSession:
         clr.AddReference(nethelper)
         import ZOSAPI_NetHelper  # noqa: E402  (available after AddReference)
 
-        ok = ZOSAPI_NetHelper.ZOSAPI_Initializer.Initialize(self._install_path or "")
+        ok = ZOSAPI_NetHelper.ZOSAPI_Initializer.Initialize("")  # "" = registered install
         if not ok:
             raise ZemaxConnectionError(
                 "ZOSAPI_Initializer.Initialize failed - could not find the "
@@ -205,7 +204,7 @@ class ZemaxSession:
                                        == self._zos.SystemType.Sequential),
         }
 
-    def close(self, save: bool = False):
+    def close(self):
         """Close the session. Only terminates the process in standalone mode."""
         try:
             if self.mode == "standalone" and self.application is not None:
@@ -224,9 +223,9 @@ class ZemaxSession:
         return False
 
 
-def connect(mode: Mode = "extension", install_path: str = "") -> ZemaxSession:
+def connect(mode: Mode = "extension") -> ZemaxSession:
     """Convenience factory mirroring ZOSPy's zos.connect('extension'|'standalone')."""
-    return ZemaxSession(mode=mode, install_path=install_path)
+    return ZemaxSession(mode=mode)
 
 
 if __name__ == "__main__":
